@@ -31,3 +31,21 @@
   width: 36px;
   text-align: center;
 }
+
+.foundry-tile-highlight-module-push-warning {
+  display: block;
+  margin-top: 0.4rem;
+  margin-bottom: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #b00020;
+  border-left: 4px solid #b00020;
+  border-radius: 4px;
+  background: rgba(176, 0, 32, 0.12);
+  color: #b00020;
+  font-weight: bold;
+  line-height: 1.35;
+}
+
+.foundry-tile-highlight-module-push-warning i {
+  margin-right: 0.4rem;
+}

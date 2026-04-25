@@ -16,6 +16,15 @@
   "esmodules": [
     "scripts/module.js"
   ],
+  "relationships": {
+    "recommends": [
+      {
+        "id": "lib-wrapper",
+        "type": "module",
+        "reason": "Used to override ClientSettings.get without conflicting with other modules."
+      }
+    ]
+  },
   "styles": [
     "styles/module.css"
   ],

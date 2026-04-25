@@ -20,8 +20,33 @@ const SETTINGS = {
 };
 
 const SCENE_FLAG_ENABLED = "enabled";
+const SCENE_FLAG_HIGHLIGHT_ALL = "highlightAll";
 const TILE_FLAG_LABEL = "label";
 const TILE_FLAG_LABEL_SIZE = "labelSize";
+const TILE_FLAG_VISIBLE_TO = "visibleTo";
+
+const VISIBILITY = {
+  ALL: "all",
+  GM: "gm",
+  PLAYERS: "players"
+};
+
+const FORCED_SETTINGS_KEY = "forcedSettings";
+
+const PUSHABLE_SETTINGS = [
+  "highlightColor",
+  "borderThickness",
+  "highlightAlpha",
+  "traceAlpha",
+  "alphaThreshold",
+  "traceResolution",
+  "simplifyTolerance",
+  "outlineSmoothness",
+  "showLabel",
+  "labelFont",
+  "labelSize",
+  "labelColor"
+];
 
 class CustomFontsApp extends (foundry?.applications?.api?.ApplicationV2 ?? class {}) {
   static DEFAULT_OPTIONS = {
@@ -126,6 +151,59 @@ class CustomFontsApp extends (foundry?.applications?.api?.ApplicationV2 ?? class
     ui.notifications?.info(game.i18n.localize(`${MODULE_ID}.customFonts.saved`));
     this.close();
   }
+}
+
+/**
+ * Tiny confirm dialog: GM clicks "Push" to broadcast their client-scoped
+ * settings to every connected player.
+ */
+class PushSettingsApp extends (foundry?.applications?.api?.ApplicationV2 ?? class {}) {
+  static DEFAULT_OPTIONS = {
+    id: `${MODULE_ID}-push-settings`,
+    tag: "form",
+    window: {
+      title: `${MODULE_ID}.push.title`,
+      icon: "fas fa-share-square",
+      contentClasses: [`${MODULE_ID}-push-settings`]
+    },
+    position: { width: 460, height: "auto" },
+    actions: {
+      doPush: PushSettingsApp.#onPush,
+      doClear: PushSettingsApp.#onClear,
+      doCancel: PushSettingsApp.#onCancel
+    }
+  };
+
+  _renderHTML() {
+    const onlineCount = (game.users?.filter(u => u.active && !u.isGM).length) ?? 0;
+    const forced = TileHoverHighlighter.getForcedSettings();
+    const hasForced = forced && Object.keys(forced).length > 0;
+    return `
+      <p class="${MODULE_ID}-push-warning"><i class="fas fa-triangle-exclamation"></i> ${game.i18n.localize(`${MODULE_ID}.push.warning`)}</p>
+      <p>${game.i18n.localize(`${MODULE_ID}.push.body`)}</p>
+      <p class="hint">${game.i18n.format(`${MODULE_ID}.push.online`, { count: onlineCount })}</p>
+      ${hasForced ? `<p class="hint"><i class="fas fa-lock"></i> ${game.i18n.localize(`${MODULE_ID}.push.activeForce`)}</p>` : ""}
+      <footer class="form-footer" style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px;">
+        <button type="button" data-action="doCancel">${game.i18n.localize("Cancel")}</button>
+        ${hasForced ? `<button type="button" data-action="doClear"><i class="fas fa-unlock"></i> ${game.i18n.localize(`${MODULE_ID}.push.clear`)}</button>` : ""}
+        <button type="button" data-action="doPush"><i class="fas fa-share-square"></i> ${game.i18n.localize(`${MODULE_ID}.push.confirm`)}</button>
+      </footer>
+    `;
+  }
+
+  _replaceHTML(result, content) { content.innerHTML = result; }
+
+  static async #onPush() {
+    await TileHoverHighlighter.pushClientSettingsToPlayers();
+    this.close();
+  }
+
+  static async #onClear() {
+    await TileHoverHighlighter.clearForcedSettings();
+    this.close();
+  }
+
+  static #onCancel() { this.close(); }
 }
 
 class TileHoverHighlighter {
@@ -270,12 +348,29 @@ class TileHoverHighlighter {
       default: []
     });
 
+    game.settings.register(MODULE_ID, FORCED_SETTINGS_KEY, {
+      scope: "world",
+      config: false,
+      type: Object,
+      default: {},
+      onChange: () => TileHoverHighlighter.onForcedSettingsChanged()
+    });
+
     game.settings.registerMenu(MODULE_ID, "customFontsMenu", {
       name: `${MODULE_ID}.settings.customFonts.name`,
       hint: `${MODULE_ID}.settings.customFonts.hint`,
       label: `${MODULE_ID}.settings.customFonts.label`,
       icon: "fas fa-font",
       type: CustomFontsApp,
+      restricted: true
+    });
+
+    game.settings.registerMenu(MODULE_ID, "pushSettingsMenu", {
+      name: `${MODULE_ID}.settings.pushToPlayers.name`,
+      hint: `${MODULE_ID}.settings.pushToPlayers.hint`,
+      label: `${MODULE_ID}.settings.pushToPlayers.label`,
+      icon: "fas fa-share-square",
+      type: PushSettingsApp,
       restricted: true
     });
 
@@ -393,6 +488,178 @@ class TileHoverHighlighter {
    * choices on the registered setting, the per-option preview stylesheet
    * and the live label render.
    */
+  /**
+   * Convert a setting value into a JSON-safe primitive for storage in the
+   * world-scope force map. ColorField returns a foundry.utils.Color
+   * instance which serialises as `{}` by default; everything else is
+   * forwarded as-is.
+   */
+  static serializeSettingValue(value) {
+    if (value === null || value === undefined) return value;
+    const ColorCtor = foundry?.utils?.Color;
+    if (ColorCtor && value instanceof ColorCtor) return value.toString();
+    if (typeof value === "object" && typeof value.toString === "function" && value.constructor?.name === "Color") {
+      return value.toString();
+    }
+    return value;
+  }
+
+  /** Read the current forced-settings map (world scope, per-key overrides). */
+  static getForcedSettings() {
+    try { return game.settings.get(MODULE_ID, FORCED_SETTINGS_KEY) ?? {}; }
+    catch (e) { return {}; }
+  }
+
+  /**
+   * Push every PUSHABLE_SETTINGS value into the world-scope force map.
+   * Foundry's own setting-update broadcast then propagates to every
+   * connected client (and to anyone who logs in later) without a socket
+   * round-trip. Only the GM can write the world setting.
+   */
+  static async pushClientSettingsToPlayers() {
+    if (!game.user.isGM) {
+      ui.notifications?.warn(game.i18n.localize(`${MODULE_ID}.push.notGM`));
+      return;
+    }
+    const payload = {};
+    for (const key of PUSHABLE_SETTINGS) {
+      try { payload[key] = this.serializeSettingValue(game.settings.get(MODULE_ID, key)); }
+      catch (e) { console.warn(`${MODULE_ID} | Failed to read setting for push`, key, e); }
+    }
+    await game.settings.set(MODULE_ID, FORCED_SETTINGS_KEY, payload);
+    ui.notifications?.info(game.i18n.localize(`${MODULE_ID}.push.sent`));
+  }
+
+  /**
+   * Drop the forced map; every client falls back to its own local choice
+   * for the affected settings on the next read.
+   */
+  static async clearForcedSettings() {
+    if (!game.user.isGM) {
+      ui.notifications?.warn(game.i18n.localize(`${MODULE_ID}.push.notGM`));
+      return;
+    }
+    await game.settings.set(MODULE_ID, FORCED_SETTINGS_KEY, {});
+    ui.notifications?.info(game.i18n.localize(`${MODULE_ID}.push.cleared`));
+  }
+
+  /**
+   * Refresh anything that depends on the now-changed effective values.
+   * Called via the world-setting onChange on every connected client.
+   */
+  static onForcedSettingsChanged() {
+    this.invalidateAllOutlines();
+    this.onFontsChanged();
+    this.redrawAll();
+  }
+
+  /**
+   * Cast a stored forced value back into the type that the registered
+   * setting field would normally hand out. Color settings in particular
+   * must return a foundry.utils.Color instance, otherwise consumers like
+   * SettingsConfig that read `.value` blow up.
+   */
+  static coerceForcedValue(namespace, key, value) {
+    try {
+      const reg = game.settings.settings.get(`${namespace}.${key}`);
+      const type = reg?.type;
+      const ColorField = foundry?.data?.fields?.ColorField;
+      const ColorCtor = foundry?.utils?.Color;
+      if (ColorField && ColorCtor && type instanceof ColorField) {
+        if (value === null || value === undefined || value === "") return null;
+        if (value instanceof ColorCtor) return value;
+        return ColorCtor.from(value);
+      }
+      if (type && typeof type.clean === "function") {
+        try { return type.clean(value); } catch (e) {}
+      }
+    } catch (e) {}
+    return value;
+  }
+
+  /**
+   * Wrap ClientSettings.prototype.get so reads of any PUSHABLE_SETTINGS key
+   * transparently return the value from the world-scope force map when one
+   * is present. Mirrors the pattern used by the force-client-controls
+   * module for keybindings.
+   *
+   * Also wraps `set` so the GM editing one of the forced settings updates
+   * the force map at the same time – the new value is therefore broadcast
+   * to every client immediately instead of being silently shadowed.
+   */
+  static patchClientSettingsGet() {
+    const getWrapper = function (wrapped, namespace, key, ...rest) {
+      if (namespace === MODULE_ID && PUSHABLE_SETTINGS.includes(key)) {
+        const forced = TileHoverHighlighter.getForcedSettings();
+        if (forced && Object.prototype.hasOwnProperty.call(forced, key)) {
+          return TileHoverHighlighter.coerceForcedValue(namespace, key, forced[key]);
+        }
+      }
+      return wrapped(namespace, key, ...rest);
+    };
+
+    const setWrapper = async function (wrapped, namespace, key, value, ...rest) {
+      const result = await wrapped(namespace, key, value, ...rest);
+      if (game.user?.isGM
+          && namespace === MODULE_ID
+          && PUSHABLE_SETTINGS.includes(key)) {
+        const forced = TileHoverHighlighter.getForcedSettings();
+        if (forced && Object.prototype.hasOwnProperty.call(forced, key)) {
+          const next = { ...forced, [key]: TileHoverHighlighter.serializeSettingValue(value) };
+          try {
+            await wrapped(MODULE_ID, FORCED_SETTINGS_KEY, next);
+          } catch (e) {
+            console.warn(`${MODULE_ID} | Failed to sync forced setting`, key, e);
+          }
+        }
+      }
+      return result;
+    };
+
+    const getTargets = [
+      "foundry.helpers.ClientSettings.prototype.get",
+      "ClientSettings.prototype.get"
+    ];
+    const setTargets = [
+      "foundry.helpers.ClientSettings.prototype.set",
+      "ClientSettings.prototype.set"
+    ];
+
+    const useLibWrapper = game.modules.get("lib-wrapper")?.active && globalThis.libWrapper;
+    let getRegistered = false;
+    let setRegistered = false;
+
+    if (useLibWrapper) {
+      for (const t of getTargets) {
+        try { libWrapper.register(MODULE_ID, t, getWrapper, "MIXED"); getRegistered = true; break; }
+        catch (e) {}
+      }
+      for (const t of setTargets) {
+        try { libWrapper.register(MODULE_ID, t, setWrapper, "WRAPPER"); setRegistered = true; break; }
+        catch (e) {}
+      }
+      if (getRegistered && setRegistered) return;
+    }
+
+    const ClientSettings = foundry?.helpers?.ClientSettings ?? globalThis.ClientSettings;
+    if (!ClientSettings?.prototype?.get || !ClientSettings?.prototype?.set) {
+      console.warn(`${MODULE_ID} | Could not patch ClientSettings; pushed settings will not apply on this client.`);
+      return;
+    }
+    if (!getRegistered) {
+      const origGet = ClientSettings.prototype.get;
+      ClientSettings.prototype.get = function (...args) {
+        return getWrapper.call(this, origGet.bind(this), ...args);
+      };
+    }
+    if (!setRegistered) {
+      const origSet = ClientSettings.prototype.set;
+      ClientSettings.prototype.set = function (...args) {
+        return setWrapper.call(this, origSet.bind(this), ...args);
+      };
+    }
+  }
+
   static onFontsChanged() {
     const reg = game.settings.settings.get(`${MODULE_ID}.${SETTINGS.LABEL_FONT}`);
     if (reg) reg.choices = this.getFontChoices();
@@ -436,6 +703,26 @@ class TileHoverHighlighter {
   }
 
   /**
+   * Inject a red warning paragraph under the "Push my settings to players"
+   * menu row in the global Settings dialog so the GM sees the consequence
+   * before opening the push dialog.
+   */
+  static injectPushWarning(root) {
+    if (!root) return;
+    const menuKey = `${MODULE_ID}.pushSettingsMenu`;
+    const button = root.querySelector(`button[data-key="${menuKey}"]`)
+      ?? Array.from(root.querySelectorAll("button")).find(b => b.name === menuKey || b.dataset?.key === menuKey);
+    if (!button) return;
+    const formGroup = button.closest(".form-group, .submenu, li, .form-fields") ?? button.parentElement;
+    if (!formGroup) return;
+    if (formGroup.querySelector(`.${MODULE_ID}-push-warning`)) return;
+    const warning = document.createElement("p");
+    warning.className = `${MODULE_ID}-push-warning`;
+    warning.innerHTML = `<i class="fas fa-triangle-exclamation"></i> ${game.i18n.localize(`${MODULE_ID}.push.warning`)}`;
+    formGroup.appendChild(warning);
+  }
+
+  /**
    * Whether the highlighter should run for a given scene. The world-level
    * master switch always wins; the per-scene flag overrides the world
    * default when set, otherwise the default-for-new-scenes setting applies.
@@ -448,6 +735,33 @@ class TileHoverHighlighter {
       return game.settings.get(MODULE_ID, SETTINGS.DEFAULT_PER_SCENE);
     }
     return Boolean(flag);
+  }
+
+  /**
+   * Whether the active scene asks for every tile to be highlighted at
+   * once instead of only on hover.
+   */
+  static isHighlightAll(scene = canvas?.scene) {
+    return Boolean(scene?.getFlag(MODULE_ID, SCENE_FLAG_HIGHLIGHT_ALL));
+  }
+
+  /**
+   * Module-specific visibility check. A tile may be flagged as visible
+   * to GM only, players only, or all. Foundry's own `hidden` flag still
+   * applies (it always hides the tile from non-GM users).
+   */
+  static isTileVisibleToCurrentUser(tile) {
+    if (!tile?.document) return false;
+    if (!tile.visible) return false;
+    if (tile.document.hidden && !game.user.isGM) {
+      if (!game.settings.get(MODULE_ID, SETTINGS.IGNORE_HIDDEN)) return true;
+      return false;
+    }
+    const visibleTo = tile.document.getFlag(MODULE_ID, TILE_FLAG_VISIBLE_TO) ?? VISIBILITY.ALL;
+    if (visibleTo === VISIBILITY.ALL) return true;
+    if (visibleTo === VISIBILITY.GM) return game.user.isGM;
+    if (visibleTo === VISIBILITY.PLAYERS) return !game.user.isGM;
+    return true;
   }
 
   static teardown() {
@@ -467,9 +781,10 @@ class TileHoverHighlighter {
   }
 
   /**
-   * Build the overlay (a container with the outline graphics and the
-   * label text) on top of the controls layer and attach the global
-   * pointer-move listener used to detect tile hovers.
+   * Build the overlay on top of the controls layer. The overlay holds two
+   * sublayers: an "all" container with one outline+label per tile (used
+   * when the scene's "highlight all" flag is on) and a "hover" pair for
+   * the single tile under the cursor.
    */
   static setupForScene() {
     this.teardown();
@@ -483,16 +798,23 @@ class TileHoverHighlighter {
     this.overlay = new PIXI.Container();
     this.overlay.eventMode = "none";
     this.overlay.zIndex = 9999;
+
+    this.overlay.allLayer = this.overlay.addChild(new PIXI.Container());
+    this.overlay.allLayer.eventMode = "none";
+
     this.overlay.graphics = this.overlay.addChild(new PIXI.Graphics());
     this.overlay.graphics.eventMode = "none";
     this.overlay.label = this.overlay.addChild(new PIXI.Text("", new PIXI.TextStyle({ fontFamily: "Arial", fontSize: 28, fill: 0xFFFFFF })));
     this.overlay.label.eventMode = "none";
     this.overlay.label.anchor?.set?.(0.5, 1);
     this.overlay.label.visible = false;
+
     parent.addChild(this.overlay);
 
     this.boundPointerMove = this.onPointerMove.bind(this);
     canvas.stage.on("pointermove", this.boundPointerMove);
+
+    this.redrawAll();
   }
 
   static refreshActiveScene() {
@@ -509,19 +831,15 @@ class TileHoverHighlighter {
   }
 
   /**
-   * Pick the topmost tile under the cursor, ignoring tiles hidden from
-   * the current user when the corresponding setting is enabled.
+   * Pick the topmost tile under the cursor, applying the per-user
+   * visibility rules (Foundry hidden + module visibleTo flag).
    */
   static findTileAt(point) {
     const tiles = canvas.tiles?.placeables ?? [];
     if (!tiles.length) return null;
 
-    const ignoreHidden = game.settings.get(MODULE_ID, SETTINGS.IGNORE_HIDDEN);
-
     const candidates = tiles.filter(t => {
-      if (!t?.document) return false;
-      if (ignoreHidden && t.document.hidden && !game.user.isGM) return false;
-      if (!t.visible) return false;
+      if (!this.isTileVisibleToCurrentUser(t)) return false;
       return this.containsPoint(t, point);
     });
 
@@ -558,9 +876,13 @@ class TileHoverHighlighter {
     return Math.abs(rx) <= width / 2 && Math.abs(ry) <= height / 2;
   }
 
-  static parseColor(str) {
+  static parseColor(input) {
     try {
-      const v = String(str ?? "").trim().replace(/^#/, "");
+      if (input === null || input === undefined) return 0xFFFF00;
+      const ColorCtor = foundry?.utils?.Color;
+      if (ColorCtor && input instanceof ColorCtor) return Number(input);
+      if (typeof input === "number" && Number.isFinite(input)) return input & 0xFFFFFF;
+      const v = String(input).trim().replace(/^#/, "");
       if (!/^[0-9a-fA-F]{6}$/.test(v)) return 0xFFFF00;
       return parseInt(v, 16);
     } catch (e) {
@@ -569,9 +891,8 @@ class TileHoverHighlighter {
   }
 
   /**
-   * Repaint the overlay for the currently hovered tile. Uses the cached
-   * silhouette polygons if available; otherwise draws the rectangular
-   * fallback and kicks off an asynchronous trace request.
+   * Repaint the hover layer. Skipped when the scene is in "highlight all"
+   * mode so the same tile isn't outlined twice.
    */
   static redraw() {
     const root = this.overlay;
@@ -580,9 +901,49 @@ class TileHoverHighlighter {
     const label = root.label;
     g.clear();
     if (label) label.visible = false;
+    if (this.isHighlightAll()) return;
     const tile = this.hoveredTile;
     if (!tile?.document) return;
+    if (!this.isTileVisibleToCurrentUser(tile)) return;
+    this.paintTile(tile, g, label);
+  }
 
+  /**
+   * Repaint the "highlight all" layer: one outline+label per visible tile
+   * on the current scene. Called whenever the scene's flag is on or when
+   * the tile set / visibility rules change.
+   */
+  static redrawAll() {
+    const root = this.overlay;
+    if (!root?.allLayer) return;
+    const layer = root.allLayer;
+
+    while (layer.children.length) {
+      const c = layer.removeChildAt(0);
+      try { c.destroy({ children: true }); } catch (e) {}
+    }
+
+    if (!this.isHighlightAll()) return;
+
+    const tiles = canvas.tiles?.placeables ?? [];
+    for (const tile of tiles) {
+      if (!this.isTileVisibleToCurrentUser(tile)) continue;
+      const g = layer.addChild(new PIXI.Graphics());
+      g.eventMode = "none";
+      const labelText = layer.addChild(new PIXI.Text("", new PIXI.TextStyle({ fontFamily: "Arial", fontSize: 28, fill: 0xFFFFFF })));
+      labelText.eventMode = "none";
+      labelText.anchor?.set?.(0.5, 1);
+      labelText.visible = false;
+      this.paintTile(tile, g, labelText);
+    }
+  }
+
+  /**
+   * Draw the outline of a tile into the supplied PIXI.Graphics, and the
+   * tile's label into the supplied PIXI.Text. Both targets are positioned
+   * in canvas-local coordinates.
+   */
+  static paintTile(tile, g, labelText) {
     const color = this.parseColor(game.settings.get(MODULE_ID, SETTINGS.COLOR));
     const thickness = Number(game.settings.get(MODULE_ID, SETTINGS.THICKNESS)) || 4;
     const alpha = Number(game.settings.get(MODULE_ID, SETTINGS.ALPHA)) || 1;
@@ -591,6 +952,7 @@ class TileHoverHighlighter {
 
     const { x, y, width, height, rotation } = tile.document;
 
+    g.clear();
     g.lineStyle({
       width: thickness,
       color,
@@ -617,18 +979,17 @@ class TileHoverHighlighter {
       if (traceAlpha) this.requestOutline(tile);
     }
 
-    this.drawLabel(tile);
+    this.paintLabel(tile, labelText);
   }
 
   /**
-   * Render the optional name above the tile. Per-tile font size override
+   * Render the optional name above a tile. Per-tile font size override
    * takes precedence over the global default; the label is always
    * positioned along the top edge of the (possibly rotated) tile.
    */
-  static drawLabel(tile) {
-    const root = this.overlay;
-    const label = root?.label;
+  static paintLabel(tile, label) {
     if (!label) return;
+    label.visible = false;
     if (!game.settings.get(MODULE_ID, SETTINGS.SHOW_LABEL)) return;
 
     const text = String(tile.document.getFlag(MODULE_ID, TILE_FLAG_LABEL) ?? "").trim();
@@ -960,8 +1321,8 @@ class TileHoverHighlighter {
   static onTileChanged(tileDoc) {
     const placeable = tileDoc.object;
     if (placeable) this.invalidateOutline(placeable);
-    if (!this.hoveredTile) return;
-    if (this.hoveredTile.document?.id === tileDoc?.id) this.redraw();
+    if (this.isHighlightAll()) this.redrawAll();
+    else if (this.hoveredTile?.document?.id === tileDoc?.id) this.redraw();
   }
 
   static onTileDeleted(tileDoc) {
@@ -971,12 +1332,26 @@ class TileHoverHighlighter {
       this.hoveredTile = null;
       this.redraw();
     }
+    if (this.isHighlightAll()) this.redrawAll();
+  }
+
+  static onTileCreated() {
+    if (this.isHighlightAll()) this.redrawAll();
   }
 
   static onSceneUpdate(scene, changes) {
     if (scene.id !== canvas?.scene?.id) return;
     const flagPath = `flags.${MODULE_ID}`;
-    if (foundry.utils.hasProperty(changes, flagPath)) this.refreshActiveScene();
+    if (!foundry.utils.hasProperty(changes, flagPath)) return;
+
+    const onlyHighlightAll = foundry.utils.hasProperty(changes, `${flagPath}.${SCENE_FLAG_HIGHLIGHT_ALL}`)
+      && !foundry.utils.hasProperty(changes, `${flagPath}.${SCENE_FLAG_ENABLED}`);
+    if (onlyHighlightAll && this.overlay) {
+      this.redraw();
+      this.redrawAll();
+    } else {
+      this.refreshActiveScene();
+    }
   }
 }
 
@@ -995,9 +1370,12 @@ function injectSceneConfig(app, html) {
   const current = scene.getFlag(MODULE_ID, SCENE_FLAG_ENABLED);
   const defaultEnabled = game.settings.get(MODULE_ID, SETTINGS.DEFAULT_PER_SCENE);
   const checked = current === undefined || current === null ? defaultEnabled : Boolean(current);
+  const highlightAll = Boolean(scene.getFlag(MODULE_ID, SCENE_FLAG_HIGHLIGHT_ALL));
 
   const labelEnabled = game.i18n.localize(`${MODULE_ID}.scene.enabled.name`);
   const labelHint = game.i18n.localize(`${MODULE_ID}.scene.enabled.hint`);
+  const labelHighlightAll = game.i18n.localize(`${MODULE_ID}.scene.highlightAll.name`);
+  const labelHighlightAllHint = game.i18n.localize(`${MODULE_ID}.scene.highlightAll.hint`);
   const sectionTitle = game.i18n.localize(`${MODULE_ID}.scene.section`);
 
   const html5 = `
@@ -1009,6 +1387,13 @@ function injectSceneConfig(app, html) {
           <input type="checkbox" name="flags.${MODULE_ID}.${SCENE_FLAG_ENABLED}" ${checked ? "checked" : ""}>
         </div>
         <p class="hint">${labelHint}</p>
+      </div>
+      <div class="form-group">
+        <label>${labelHighlightAll}</label>
+        <div class="form-fields">
+          <input type="checkbox" name="flags.${MODULE_ID}.${SCENE_FLAG_HIGHLIGHT_ALL}" ${highlightAll ? "checked" : ""}>
+        </div>
+        <p class="hint">${labelHighlightAllHint}</p>
       </div>
     </fieldset>
   `;
@@ -1042,17 +1427,34 @@ function injectTileConfig(app, html) {
   const current = String(tileDoc.getFlag(MODULE_ID, TILE_FLAG_LABEL) ?? "");
   const sizeFlag = tileDoc.getFlag(MODULE_ID, TILE_FLAG_LABEL_SIZE);
   const sizeValue = (sizeFlag === undefined || sizeFlag === null || sizeFlag === "") ? "" : String(sizeFlag);
+  const visibleTo = tileDoc.getFlag(MODULE_ID, TILE_FLAG_VISIBLE_TO) ?? VISIBILITY.ALL;
 
   const labelName = game.i18n.localize(`${MODULE_ID}.tile.label.name`);
   const labelHint = game.i18n.localize(`${MODULE_ID}.tile.label.hint`);
   const sizeName = game.i18n.localize(`${MODULE_ID}.tile.labelSize.name`);
   const sizeHint = game.i18n.localize(`${MODULE_ID}.tile.labelSize.hint`);
+  const visibilityName = game.i18n.localize(`${MODULE_ID}.tile.visibility.name`);
+  const visibilityHint = game.i18n.localize(`${MODULE_ID}.tile.visibility.hint`);
+  const visAll = game.i18n.localize(`${MODULE_ID}.tile.visibility.all`);
+  const visGM = game.i18n.localize(`${MODULE_ID}.tile.visibility.gm`);
+  const visPlayers = game.i18n.localize(`${MODULE_ID}.tile.visibility.players`);
   const sectionTitle = game.i18n.localize(`${MODULE_ID}.tile.section`);
   const defaultSize = Number(game.settings.get(MODULE_ID, SETTINGS.LABEL_SIZE)) || 28;
 
   const html5 = `
     <fieldset data-module="${MODULE_ID}" class="${MODULE_ID}-scene-section">
       <legend>${sectionTitle}</legend>
+      <div class="form-group">
+        <label>${visibilityName}</label>
+        <div class="form-fields">
+          <select name="flags.${MODULE_ID}.${TILE_FLAG_VISIBLE_TO}">
+            <option value="${VISIBILITY.ALL}" ${visibleTo === VISIBILITY.ALL ? "selected" : ""}>${visAll}</option>
+            <option value="${VISIBILITY.GM}" ${visibleTo === VISIBILITY.GM ? "selected" : ""}>${visGM}</option>
+            <option value="${VISIBILITY.PLAYERS}" ${visibleTo === VISIBILITY.PLAYERS ? "selected" : ""}>${visPlayers}</option>
+          </select>
+        </div>
+        <p class="hint">${visibilityHint}</p>
+      </div>
       <div class="form-group">
         <label>${labelName}</label>
         <div class="form-fields">
@@ -1101,12 +1503,17 @@ Hooks.once("ready", async () => {
   TileHoverHighlighter.onFontsChanged();
 });
 
+Hooks.once("setup", () => {
+  TileHoverHighlighter.patchClientSettingsGet();
+});
+
 Hooks.on("renderSettingsConfig", (app, html) => {
   TileHoverHighlighter.injectFontStylesheet();
   const root = html instanceof HTMLElement ? html : html?.[0];
   if (!root) return;
   const selectEl = root.querySelector(`select[name="${MODULE_ID}.${SETTINGS.LABEL_FONT}"]`);
   TileHoverHighlighter.applyFontPreviewToSelect(selectEl);
+  TileHoverHighlighter.injectPushWarning(root);
 });
 
 Hooks.on("canvasReady", () => TileHoverHighlighter.setupForScene());
@@ -1114,6 +1521,7 @@ Hooks.on("canvasTearDown", () => TileHoverHighlighter.teardown());
 Hooks.on("updateScene", (scene, changes) => TileHoverHighlighter.onSceneUpdate(scene, changes));
 Hooks.on("updateTile", (tileDoc) => TileHoverHighlighter.onTileChanged(tileDoc));
 Hooks.on("deleteTile", (tileDoc) => TileHoverHighlighter.onTileDeleted(tileDoc));
+Hooks.on("createTile", () => TileHoverHighlighter.onTileCreated());
 Hooks.on("renderSceneConfig", (app, html) => injectSceneConfig(app, html));
 Hooks.on("renderTileConfig", (app, html) => injectTileConfig(app, html));
 
