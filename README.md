@@ -1,71 +1,119 @@
-![](https://img.shields.io/badge/Foundry-v10-informational)
-<!--- Downloads @ Latest Badge -->
-<!--- replace <user>/<repo> with your username/repository -->
-<!--- ![Latest Release Download Count](https://img.shields.io/github/downloads/<user>/<repo>/latest/module.zip) -->
+![](https://img.shields.io/badge/Foundry-v13-informational)
 
-<!--- Forge Bazaar Install % Badge -->
-<!--- replace <your-module-name> with the `name` in your manifest -->
-<!--- ![Forge Installs](https://img.shields.io/badge/dynamic/json?label=Forge%20Installs&query=package.installs&suffix=%25&url=https%3A%2F%2Fforge-vtt.com%2Fapi%2Fbazaar%2Fpackage%2F<your-module-name>&colorB=4aa94a) -->
+# Tile Hover Highlight
 
+A FoundryVTT v13 module that draws an outline around the tile under the cursor and optionally shows the tile's name above it. The highlight is purely visual and works for **every user** (GM and players alike), independent of which canvas layer is active.
 
-# How to use this Template to create a versioned Release
+---
 
-1. Open your repository's releases page.
+## Features
 
-![Where to click to open repository releases.](https://user-images.githubusercontent.com/7644614/93409301-9fd25080-f864-11ea-9e0c-bdd09e4418e4.png)
+- Outline drawn around the hovered tile in a configurable color, thickness and opacity.
+- Silhouette tracing: the outline can follow the actual non-transparent pixels of a PNG/WebP instead of the rectangular tile bounds.
+- Outline smoothing via Catmull-Rom interpolation, from sharp polygonal to strongly rounded.
+- Optional label rendered above the tile, with global default font/size/color and a per-tile size override.
+- Custom font upload – bring your own `.woff/.woff2/.ttf/.otf` and use it as the label font.
+- The font dropdown only lists typefaces that contain Cyrillic glyphs (so `ru/uk/...` users don't get unusable choices), plus any custom fonts you add.
+- Each font option in the dropdown is rendered in its own typeface for live preview.
+- Master switch and per-scene toggle so the highlight only runs where you want it.
+- Hidden tiles are skipped for non-GM users.
 
-2. Click "Draft a new release"
+---
 
-![Draft a new release button.](https://user-images.githubusercontent.com/7644614/93409364-c1333c80-f864-11ea-89f1-abfcb18a8d9f.png)
+## Installation
 
-3. Fill out the release version as the tag name.
+Use the manifest URL of the latest release:
 
-If you want to add details at this stage you can, or you can always come back later and edit them.
+```
+https://github.com/<user>/<repo>/releases/latest/download/module.json
+```
 
-![Release Creation Form](https://user-images.githubusercontent.com/7644614/93409543-225b1000-f865-11ea-9a19-f1906a724421.png)
+Or copy the module folder into `Data/modules/foundry-tile-highlight-module/` of your Foundry instance.
 
-4. Hit submit.
+---
 
-5. Wait a few minutes.
+## Usage
 
-A Github Action will run to populate the `module.json` and `module.zip` with the correct urls that you can then use to distribute this release. You can check on its status in the "Actions" tab.
+### Master switch
+*Settings → Configure Settings → Tile Hover Highlight → "Enable highlight".*
+Turning this off disables the module everywhere without uninstalling it.
 
-![Actions Tab](https://user-images.githubusercontent.com/7644614/93409820-c1800780-f865-11ea-8c6b-c3792e35e0c8.png)
+### Enabling a scene
+By default new scenes are **not** highlighted. Open *Scene Configuration → Tile Hover Highlight* and tick **"Enable on this scene"**.
 
-6. Grab the module.json url from the release's details page.
+The world setting *"Default for new scenes"* (off by default) controls the value used when a scene has no explicit choice.
 
-![image](https://user-images.githubusercontent.com/7644614/93409960-10c63800-f866-11ea-83f6-270cc5d10b71.png)
+### Naming a tile
+Open the tile's configuration dialog. At the bottom of the basic tab you'll find a **"Tile name"** field – anything entered here will appear above the tile while it's hovered.
 
-This `module.json` will only ever point at this release's `module.zip`, making it useful for sharing a specific version for compatibility purposes.
+The same dialog has a **"Label size (px)"** field that overrides the global font size for this tile only. Leave it blank to use the default.
 
-7. You can use the url `https://github.com/<user>/<repo>/releases/latest/download/module.json` to refer to the manifest.
+### Custom fonts
+*Settings → Configure Settings → Tile Hover Highlight → "Custom fonts" → "Manage…"*
 
-This is the url you want to use to install the module typically, as it will get updated automatically.
+Each row holds a CSS family name and a path to the font file. Click the folder icon to open Foundry's file browser (you can upload directly from there). Press *Save* to persist; the font is loaded immediately and the dropdown picks it up. Custom fonts are always shown in the dropdown regardless of the Cyrillic check.
 
-# How to List Your Releases on Package Admin
+A typical entry:
 
-To request a package listing for your first release, go to the [Package Submission Form](https://foundryvtt.com/packages/submit) (accessible via a link at the bottom of the "[Systems and Modules](https://foundryvtt.com/packages/)" page on the Foundry website).
+| Family | URL |
+|---|---|
+| MyHandwriting | `modules/foundry-tile-highlight-module/fonts/MyHandwriting.woff2` |
 
-Fill in the form. "Package Name" must match the name in the module manifest.  Package Title will be the display name for the package.  Package URL should be your repo URL.
-![image](https://user-images.githubusercontent.com/36359784/120664263-b49e5500-c482-11eb-9126-af7006389903.png)
+---
 
+## Settings reference
 
-One of the Foundry staff will typically get back to you with an approval or any further questions within a few days, and give you access to the package admin pages.
+| Setting | Scope | Default |
+|---|---|---|
+| Enable highlight | World | on |
+| Default for new scenes | World | off |
+| Skip hidden tiles for players | World | on |
+| Outline color | Client | `#FFFF00` |
+| Outline thickness | Client | 4 px |
+| Outline opacity | Client | 1.0 |
+| Trace by image silhouette | Client | on |
+| Alpha threshold | Client | 0.1 |
+| Trace resolution | Client | 256 px |
+| Outline simplification | Client | 1.5 |
+| Outline smoothness | Client | 0.5 |
+| Show tile name | Client | on |
+| Label font | Client | first available Cyrillic-capable font (`Arial` if present) |
+| Default label size | Client | 28 px |
+| Label color | Client | `#FFFFFF` |
+| Custom fonts | World (managed via menu) | – |
 
-Once you have access to the [module admin page](https://foundryvtt.com/admin/packages/package/), you can release a new version by going into the page for your module, scrolling to the bottom, and filling in a new Package Version.
+Per-document flags written by the module:
 
-When listing a new version, Version should be the version number you set above, and the Manifest URL should be the manifest __for that specific version__ (do not use /latest/ here).
-![image](https://user-images.githubusercontent.com/36359784/120664346-c4b63480-c482-11eb-9d8b-731b50d70939.png)
+- `scene.flags.foundry-tile-highlight-module.enabled` – boolean
+- `tile.flags.foundry-tile-highlight-module.label` – string
+- `tile.flags.foundry-tile-highlight-module.labelSize` – number (px) or empty
 
-> ### :warning: Important :warning:
-> 
-> It is very important that you use the specific release manifest url, and not the `/latest` url here. For more details about why this is important and how Foundry Installs/Updates packages, read [this wiki article](https://foundryvtt.wiki/en/development/guides/releases-and-history).
+---
 
-Clicking "Save" in the bottom right will save the new version, which means that anyone installing your module from within Foundry will get that version, and a post will be generated in the #release-announcements channel on the official Foundry VTT Discord.
+## How it works
 
+- A single `PIXI.Container` is added to `canvas.controls` per scene; it holds a `Graphics` for the outline and a `Text` for the label.
+- A global `pointermove` listener on `canvas.stage` runs a rotation-aware point-in-rectangle test against every visible tile and picks the topmost hit by `sort` then `elevation`.
+- When silhouette tracing is enabled, the tile's texture is drawn into an off-screen canvas at the configured resolution, the alpha channel is thresholded into a binary mask, and the outermost contours are extracted via Moore-neighbor boundary tracing. The result is simplified with Ramer–Douglas–Peucker, optionally smoothed with Catmull-Rom subdivision, then projected back into the tile's local frame.
+- Outlines are cached per `id|src|size|scaleX|scaleY`; updating or deleting a tile invalidates its entry. Videos and images that fail CORS / `getImageData` fall back to the rectangular outline forever (cached as `null`).
+- Cyrillic support is detected by drawing the character "Я" once with the candidate family and once with a deliberately invalid one – different rendered widths mean the font has its own glyph.
 
-# FoundryVTT Module
+---
 
-Does something, probably
+## Compatibility
 
-## Changelog
+- Foundry VTT **v13** (uses ApplicationV2 hooks, the new `foundry.applications.*` namespaces, and PIXI v7 conventions).
+- No system requirements.
+- No required dependencies.
+
+---
+
+## Building releases
+
+Tagging a GitHub release runs `.github/workflows/main.yml`, which substitutes the version into `module.json` and packages `module.json`, `README.md`, `LICENSE`, `scripts/`, `styles/` and `languages/` into `module.zip`.
+
+---
+
+## License
+
+See [LICENSE](LICENSE).

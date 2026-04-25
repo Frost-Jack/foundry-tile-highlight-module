@@ -1,0 +1,33 @@
+.foundry-tile-highlight-module-scene-section {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border-light-tertiary, #999);
+  border-radius: 4px;
+}
+
+.foundry-tile-highlight-module-scene-section legend {
+  padding: 0 0.4rem;
+  font-weight: bold;
+}
+
+.foundry-tile-highlight-module-fonts-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.foundry-tile-highlight-module-fonts-table th,
+.foundry-tile-highlight-module-fonts-table td {
+  padding: 4px 6px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--color-border-light-tertiary, #ccc);
+}
+
+.foundry-tile-highlight-module-fonts-table input[type="text"] {
+  width: 100%;
+}
+
+.foundry-tile-highlight-module-fonts-table th:last-child,
+.foundry-tile-highlight-module-fonts-table td:last-child {
+  width: 36px;
+  text-align: center;
+}
